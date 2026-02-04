@@ -26,6 +26,9 @@ app.use((req, res, next) => {
   next();
 });
 
+// Parse JSON body
+app.use(express.json());
+
 // Serve static files
 app.use(express.static(__dirname));
 
@@ -90,11 +93,20 @@ app.get('/api/polecats', async (req, res) => {
   }
 });
 
+// Sanitize identifiers (allow alphanumeric, dash, underscore, colon, @)
+function sanitizeId(str) {
+  if (!str || !/^[a-zA-Z0-9_\-:@]+$/.test(str)) {
+    throw new Error('Invalid identifier');
+  }
+  return str;
+}
+
 // Get bead details
 app.get('/api/bead/:id', async (req, res) => {
   try {
-    const output = await runGtCommand(`bead show ${req.params.id}`);
-    res.json({ id: req.params.id, content: output });
+    const beadId = sanitizeId(req.params.id);
+    const output = await runGtCommand(`bead show ${beadId}`);
+    res.json({ id: beadId, content: output });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -105,6 +117,51 @@ app.get('/api/mail', async (req, res) => {
   try {
     const mail = await getGtJson('mail inbox --json');
     res.json(mail || []);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Close a bead
+app.post('/api/bead/:id/close', async (req, res) => {
+  try {
+    const beadId = sanitizeId(req.params.id);
+    await runGtCommand(`bead close ${beadId}`);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Kill a polecat
+app.post('/api/polecat/:rig/:name/kill', async (req, res) => {
+  try {
+    const rig = sanitizeId(req.params.rig);
+    const name = sanitizeId(req.params.name);
+    await runGtCommand(`polecat kill ${rig}/${name}`);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Send mail to mayor
+app.post('/api/mail/mayor', async (req, res) => {
+  try {
+    const message = req.body.message;
+    if (!message || typeof message !== 'string') {
+      res.status(400).json({ error: 'Message required' });
+      return;
+    }
+    // Limit message length
+    if (message.length > 2000) {
+      res.status(400).json({ error: 'Message too long (max 2000 chars)' });
+      return;
+    }
+    // Escape the message for shell (single quote escaping)
+    const escapedMessage = message.replace(/'/g, "'\\''");
+    await runGtCommand(`mail send mayor/ -s "WebUI Message" -m '${escapedMessage}'`);
+    res.json({ success: true });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -220,15 +277,22 @@ function setupEventWatcher() {
 }
 
 // WebSocket connection handling
-wss.on('connection', (ws) => {
+wss.on('connection', async (ws) => {
   console.log('Client connected');
 
-  // Send initial status
-  getGtJson('status --json').then(status => {
+  // Send initial status with polecats
+  try {
+    const [status, polecats] = await Promise.all([
+      getGtJson('status --json'),
+      getGtJson('polecat list --all --json')
+    ]);
     if (status) {
+      status.polecats = polecats || [];
       ws.send(JSON.stringify({ type: 'status', data: status }));
     }
-  });
+  } catch (e) {
+    console.error('Error sending initial status:', e.message);
+  }
 
   ws.on('close', () => {
     console.log('Client disconnected');
@@ -243,8 +307,13 @@ wss.on('connection', (ws) => {
 setInterval(async () => {
   if (wss.clients.size > 0) {
     try {
-      const status = await getGtJson('status --json');
+      const [status, polecats] = await Promise.all([
+        getGtJson('status --json'),
+        getGtJson('polecat list --all --json')
+      ]);
       if (status) {
+        // Include polecats in status update
+        status.polecats = polecats || [];
         wss.clients.forEach(client => {
           if (client.readyState === 1) {
             client.send(JSON.stringify({ type: 'status', data: status }));

@@ -264,7 +264,7 @@
 
         .bead-item {
             display: grid;
-            grid-template-columns: 100px 1fr 120px 80px;
+            grid-template-columns: 100px 1fr 120px 80px 32px;
             gap: 1rem;
             padding: 1rem;
             border-bottom: 1px solid var(--gray-100);
@@ -273,6 +273,26 @@
 
         .bead-item:last-child {
             border-bottom: none;
+        }
+
+        .bead-close {
+            width: 24px;
+            height: 24px;
+            background: transparent;
+            border: 1px solid var(--gray-200);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1rem;
+            color: var(--gray-400);
+            transition: all 0.15s ease;
+        }
+
+        .bead-close:hover {
+            background: var(--red);
+            border-color: var(--red);
+            color: var(--white);
         }
 
         .bead-id {
@@ -414,6 +434,148 @@
             margin-top: 0.5rem;
             padding-top: 0.5rem;
             border-top: 1px solid var(--gray-100);
+        }
+
+        /* Polecat List */
+        .polecat-list {
+            background: var(--white);
+            border: 1px solid var(--black);
+        }
+
+        .polecat-item {
+            display: grid;
+            grid-template-columns: 1fr 80px 32px;
+            gap: 1rem;
+            padding: 0.75rem 1rem;
+            border-bottom: 1px solid var(--gray-100);
+            align-items: center;
+        }
+
+        .polecat-item:last-child {
+            border-bottom: none;
+        }
+
+        .polecat-info {
+            display: flex;
+            flex-direction: column;
+            gap: 0.15rem;
+        }
+
+        .polecat-name {
+            font-weight: 600;
+            font-size: 0.875rem;
+        }
+
+        .polecat-rig {
+            font-size: 0.7rem;
+            color: var(--gray-600);
+        }
+
+        .polecat-status {
+            font-size: 0.65rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            padding: 0.3em 0.6em;
+            text-align: center;
+        }
+
+        .polecat-status.working { background: var(--green); color: var(--white); }
+        .polecat-status.idle { background: var(--yellow); color: var(--black); }
+        .polecat-status.offline { background: var(--gray-200); }
+
+        .polecat-kill {
+            width: 24px;
+            height: 24px;
+            background: transparent;
+            border: 1px solid var(--gray-200);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.7rem;
+            color: var(--gray-400);
+            transition: all 0.15s ease;
+        }
+
+        .polecat-kill:hover {
+            background: var(--red);
+            border-color: var(--red);
+            color: var(--white);
+        }
+
+        /* Mayor Chat */
+        .mayor-chat {
+            border: 1px solid var(--black);
+            background: var(--white);
+            margin-top: 2rem;
+        }
+
+        .mayor-chat-header {
+            padding: 0.75rem 1rem;
+            border-bottom: 1px solid var(--gray-100);
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .mayor-chat-title {
+            font-size: 0.75rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+        }
+
+        .mayor-chat-icon {
+            width: 20px;
+            height: 20px;
+            background: var(--yellow);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.6rem;
+            font-weight: 700;
+        }
+
+        .mayor-chat-input {
+            display: flex;
+            padding: 0.75rem 1rem;
+            gap: 0.5rem;
+        }
+
+        .mayor-chat-input input {
+            flex: 1;
+            border: 1px solid var(--gray-200);
+            padding: 0.5rem 0.75rem;
+            font-size: 0.875rem;
+            font-family: inherit;
+        }
+
+        .mayor-chat-input input:focus {
+            outline: none;
+            border-color: var(--black);
+        }
+
+        .mayor-chat-input button {
+            background: var(--black);
+            color: var(--white);
+            border: none;
+            padding: 0.5rem 1rem;
+            font-size: 0.75rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            cursor: pointer;
+            transition: background 0.15s ease;
+        }
+
+        .mayor-chat-input button:hover {
+            background: var(--gray-600);
+        }
+
+        .mayor-chat-input button:disabled {
+            background: var(--gray-200);
+            cursor: not-allowed;
         }
 
         /* Convoy Section */
@@ -581,6 +743,17 @@
             </div>
         </div>
 
+        <!-- Polecats -->
+        <div class="queue-section">
+            <div class="queue-header">
+                <div class="queue-title">Active Polecats</div>
+                <div class="queue-count" id="polecatCount">0</div>
+            </div>
+            <div class="polecat-list" id="polecatList">
+                <!-- Populated by JS -->
+            </div>
+        </div>
+
         <!-- Bead Queue -->
         <div class="queue-section">
             <div class="queue-header">
@@ -589,6 +762,18 @@
             </div>
             <div class="bead-list" id="beadList">
                 <!-- Populated by JS -->
+            </div>
+        </div>
+
+        <!-- Mayor Chat -->
+        <div class="mayor-chat">
+            <div class="mayor-chat-header">
+                <div class="mayor-chat-icon">M</div>
+                <div class="mayor-chat-title">Message Mayor</div>
+            </div>
+            <div class="mayor-chat-input">
+                <input type="text" id="mayorMessage" placeholder="Send a message to the Mayor..." />
+                <button id="sendToMayor" onclick="sendToMayor()">Send</button>
             </div>
         </div>
     </main>
@@ -613,6 +798,7 @@
         convoys: [],
         logs: [],
         agents: [],
+        polecats: [],
         connected: false,
         selectedRig: null
     };
@@ -722,6 +908,19 @@
             }));
         }
 
+        // Fetch polecats
+        const polecats = await fetchApi('polecats');
+        if (polecats && Array.isArray(polecats)) {
+            state.polecats = polecats.map(p => ({
+                name: p.name,
+                rig: p.rig,
+                status: p.running ? (p.has_work ? 'working' : 'idle') : 'offline',
+                hook: p.hook_bead || p.work_title || null,
+                pid: p.pid
+            }));
+        }
+
+        updateConnectionStatus(state.connected);
         render();
     }
 
@@ -820,7 +1019,18 @@
                     }));
                     state.agents = msg.data.agents || [];
                     state.summary = msg.data.summary || {};
+                    // Extract polecats from rigs if available
+                    if (msg.data.polecats) {
+                        state.polecats = msg.data.polecats.map(p => ({
+                            name: p.name,
+                            rig: p.rig,
+                            status: p.running ? (p.has_work ? 'working' : 'idle') : 'offline',
+                            hook: p.hook_bead || p.work_title || null,
+                            pid: p.pid
+                        }));
+                    }
                     updateAgentCards(state.agents);
+                    updateConnectionStatus(state.connected);
                     render();
                 }
                 break;
@@ -846,18 +1056,39 @@
     function updateConnectionStatus(connected) {
         const dot = document.querySelector('.status-dot');
         const label = document.querySelector('.status-indicator span');
+
+        // Determine overall activity status
+        let statusClass = 'offline';
+        let statusLabel = 'Offline';
+
+        if (connected) {
+            const hasActiveWork = state.polecats.some(p => p.status === 'working') ||
+                                  state.agents.some(a => a.running && a.has_work);
+            if (hasActiveWork) {
+                statusClass = '';  // green (default)
+                statusLabel = 'Active';
+            } else {
+                statusClass = 'idle';
+                statusLabel = 'Idle';
+            }
+        }
+
         if (dot) {
-            dot.className = `status-dot ${connected ? '' : 'offline'}`;
+            dot.className = `status-dot ${statusClass}`;
         }
         if (label) {
-            label.textContent = connected ? 'Live' : 'Offline';
+            label.textContent = statusLabel;
         }
     }
 
     function render() {
         // Update stats
         document.getElementById('statRigs').textContent = state.rigs.length;
-        document.getElementById('statActive').textContent = state.summary?.polecat_count || state.rigs.reduce((a, r) => a + r.polecats, 0);
+        // Prefer polecats list, then summary, then rig totals
+        const polecatCount = state.polecats.length ||
+                             state.summary?.polecat_count ||
+                             state.rigs.reduce((a, r) => a + (r.polecats || 0), 0);
+        document.getElementById('statActive').textContent = polecatCount;
         document.getElementById('statPending').textContent = state.beads.filter(b => b.status === 'hooked' || b.status === 'pending').length;
         document.getElementById('statCompleted').textContent = state.beads.filter(b => b.status === 'completed').length;
         document.getElementById('lastUpdate').textContent = new Date().toLocaleTimeString();
@@ -891,17 +1122,32 @@
             </div>
         `).join('') : '<div class="convoy-item"><div class="convoy-name">No active convoys</div></div>';
 
+        // Render polecats
+        const polecatList = document.getElementById('polecatList');
+        document.getElementById('polecatCount').textContent = state.polecats.length;
+        polecatList.innerHTML = state.polecats.length ? state.polecats.map(polecat => `
+            <div class="polecat-item">
+                <div class="polecat-info">
+                    <div class="polecat-name">${polecat.name}</div>
+                    <div class="polecat-rig">${polecat.rig}${polecat.hook ? ' · ' + polecat.hook : ''}</div>
+                </div>
+                <div class="polecat-status ${polecat.status}">${polecat.status}</div>
+                <button class="polecat-kill" onclick="killPolecat('${polecat.rig}', '${polecat.name}')" title="Kill polecat">×</button>
+            </div>
+        `).join('') : '<div class="polecat-item"><div class="polecat-info"><div class="polecat-name">No active polecats</div></div></div>';
+
         // Render beads
         const beadList = document.getElementById('beadList');
         document.getElementById('beadCount').textContent = state.beads.length;
         beadList.innerHTML = state.beads.length ? state.beads.map(bead => `
-            <div class="bead-item" onclick="showBead('${bead.id}')">
-                <div class="bead-id">${bead.id}</div>
+            <div class="bead-item">
+                <div class="bead-id" style="cursor: pointer" onclick="showBead('${bead.id}')">${bead.id}</div>
                 <div class="bead-title">${bead.title}</div>
                 <div class="bead-assignee">${bead.assignee}</div>
                 <div class="bead-status ${bead.status}">${bead.status}</div>
+                <button class="bead-close" onclick="closeBead('${bead.id}')" title="Close bead">×</button>
             </div>
-        `).join('') : '<div class="bead-item"><div class="bead-title">No beads in queue</div></div>';
+        `).join('') : '<div class="bead-item"><div class="bead-title" style="grid-column: span 5">No beads in queue</div></div>';
 
         renderLogs();
     }
@@ -929,6 +1175,87 @@
             alert(`Bead ${beadId}:\n\n${data.content.slice(0, 500)}${data.content.length > 500 ? '...' : ''}`);
         }
     }
+
+    async function closeBead(beadId) {
+        if (!confirm(`Close bead ${beadId}?`)) return;
+        try {
+            const res = await fetch(`${API_BASE}/api/bead/${beadId}/close`, { method: 'POST' });
+            if (res.ok) {
+                state.beads = state.beads.filter(b => b.id !== beadId);
+                render();
+                addLog('webui', `Closed bead ${beadId}`, 'success');
+            } else {
+                const err = await res.json();
+                addLog('webui', `Failed to close ${beadId}: ${err.error}`, 'error');
+            }
+        } catch (e) {
+            addLog('webui', `Error closing bead: ${e.message}`, 'error');
+        }
+    }
+
+    async function killPolecat(rig, name) {
+        if (!confirm(`Kill polecat ${name} in ${rig}?`)) return;
+        try {
+            const res = await fetch(`${API_BASE}/api/polecat/${rig}/${name}/kill`, { method: 'POST' });
+            if (res.ok) {
+                state.polecats = state.polecats.filter(p => !(p.rig === rig && p.name === name));
+                render();
+                addLog('webui', `Killed polecat ${name}`, 'success');
+            } else {
+                const err = await res.json();
+                addLog('webui', `Failed to kill ${name}: ${err.error}`, 'error');
+            }
+        } catch (e) {
+            addLog('webui', `Error killing polecat: ${e.message}`, 'error');
+        }
+    }
+
+    async function sendToMayor() {
+        const input = document.getElementById('mayorMessage');
+        const button = document.getElementById('sendToMayor');
+        const message = input.value.trim();
+        if (!message) return;
+
+        button.disabled = true;
+        try {
+            const res = await fetch(`${API_BASE}/api/mail/mayor`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ message })
+            });
+            if (res.ok) {
+                input.value = '';
+                addLog('webui', `Sent to Mayor: ${message.slice(0, 50)}${message.length > 50 ? '...' : ''}`, 'success');
+            } else {
+                const err = await res.json();
+                addLog('webui', `Failed to send: ${err.error}`, 'error');
+            }
+        } catch (e) {
+            addLog('webui', `Error sending message: ${e.message}`, 'error');
+        }
+        button.disabled = false;
+    }
+
+    function addLog(source, message, type = '') {
+        state.logs.unshift({
+            time: new Date().toLocaleTimeString(),
+            source,
+            message,
+            type
+        });
+        if (state.logs.length > 50) state.logs.pop();
+        renderLogs();
+    }
+
+    // Handle enter key in mayor chat
+    document.addEventListener('DOMContentLoaded', () => {
+        const input = document.getElementById('mayorMessage');
+        if (input) {
+            input.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') sendToMayor();
+            });
+        }
+    });
 
     // Initialize
     loadData();
