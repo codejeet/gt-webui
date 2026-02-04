@@ -10,6 +10,173 @@ const PORT = process.env.PORT || 3000;
 const GT_DIR = process.env.GT_DIR || path.join(process.env.HOME, 'gt');
 const EVENTS_FILE = path.join(GT_DIR, '.events.jsonl');
 
+// Activity detection patterns for Claude Code output
+// These indicate ONGOING activity (tool running, thinking, etc.)
+const ACTIVE_PATTERNS = [
+  /⎿\s+Running…/,        // Tool is actively running
+  /Warping/i,            // Warping animation
+  /Wandering/i,          // Wandering animation (thinking)
+  /thinking/i,           // Thinking indicator
+  /thought for \d+/,     // Recently finished thinking
+  /\[█+\s*\]/,           // Progress bar spinner
+  /Searching\.\.\./i,
+  /Loading\.\.\./i,
+  /Processing\.\.\./i,
+];
+
+// Idle patterns - check that prompt is at end with only UI chrome after
+const IDLE_PATTERNS = [
+  /❯\s*\n+[-─━]+\n\s*⏵/,  // Prompt followed by separator and status bar (typical idle)
+  /Waiting for input/i,
+];
+
+// Cache for pane content to detect changes
+const paneContentCache = new Map();
+
+// Detect activity from tmux pane content
+function detectActivityFromPane(paneContent, sessionName) {
+  if (!paneContent || paneContent.trim() === '') {
+    return 'idle';
+  }
+
+  // Get the last few lines to check current state (not historical)
+  const lines = paneContent.split('\n');
+  const lastLines = lines.slice(-20).join('\n');
+
+  // Check for active patterns FIRST - if actively doing something, it's working
+  // These patterns indicate ongoing activity
+  for (const pattern of ACTIVE_PATTERNS) {
+    if (pattern.test(lastLines)) {
+      return 'working';
+    }
+  }
+
+  // If no active patterns, check for idle state
+  for (const pattern of IDLE_PATTERNS) {
+    if (pattern.test(lastLines)) {
+      return 'idle';
+    }
+  }
+
+  // Check if content changed recently (indicates activity)
+  const cachedContent = paneContentCache.get(sessionName);
+  const contentChanged = cachedContent !== paneContent;
+  paneContentCache.set(sessionName, paneContent);
+
+  // If content changed recently, likely still processing
+  if (contentChanged) {
+    return 'working';
+  }
+
+  // Default to idle if no active patterns and content stable
+  return 'idle';
+}
+
+// Capture tmux pane content for a polecat session
+function captureTmuxPane(sessionName) {
+  return new Promise((resolve) => {
+    // Sanitize session name
+    if (!/^[a-zA-Z0-9_\-:@/]+$/.test(sessionName)) {
+      resolve(null);
+      return;
+    }
+    exec(`tmux capture-pane -t "${sessionName}" -p -S -50`, {
+      timeout: 5000,
+      maxBuffer: 1024 * 64
+    }, (error, stdout) => {
+      if (error) {
+        resolve(null);
+        return;
+      }
+      resolve(stdout);
+    });
+  });
+}
+
+// Get activity status for all polecats
+async function getPolecatActivityStatus(polecats) {
+  if (!polecats || !Array.isArray(polecats)) {
+    return polecats;
+  }
+
+  const enrichedPolecats = await Promise.all(polecats.map(async (p) => {
+    // Check both 'running' and 'session_running' fields
+    const isRunning = p.running || p.session_running;
+    if (!isRunning) {
+      return { ...p, activity_status: 'offline' };
+    }
+
+    // Try to capture tmux pane for this polecat
+    // Session name format is: gt-{rig}-{name}
+    const sessionNames = [
+      `gt-${p.rig}-${p.name}`,
+      `${p.rig}-${p.name}`,
+      `gt-${p.name}`,
+      p.name
+    ];
+
+    let paneContent = null;
+    let usedSession = null;
+    for (const sessionName of sessionNames) {
+      paneContent = await captureTmuxPane(sessionName);
+      if (paneContent !== null) {
+        usedSession = sessionName;
+        break;
+      }
+    }
+
+    if (paneContent !== null) {
+      const activity = detectActivityFromPane(paneContent, usedSession);
+      return { ...p, activity_status: activity };
+    }
+
+    // Fallback to has_work flag if tmux capture fails
+    return { ...p, activity_status: p.has_work ? 'working' : 'idle' };
+  }));
+
+  return enrichedPolecats;
+}
+
+// Get activity status for agents (mayor, deacon, etc.)
+async function getAgentActivityStatus(agents) {
+  if (!agents || !Array.isArray(agents)) {
+    return agents;
+  }
+
+  const enrichedAgents = await Promise.all(agents.map(async (a) => {
+    if (!a.running) {
+      return { ...a, activity_status: 'offline' };
+    }
+
+    // Try to capture tmux pane for this agent
+    // Use the session field if available, otherwise try hq-{name}
+    const sessionNames = a.session ? [a.session] : [
+      `hq-${a.name}`,
+      a.name
+    ];
+
+    let paneContent = null;
+    let usedSession = null;
+    for (const sessionName of sessionNames) {
+      paneContent = await captureTmuxPane(sessionName);
+      if (paneContent !== null) {
+        usedSession = sessionName;
+        break;
+      }
+    }
+
+    if (paneContent !== null) {
+      const activity = detectActivityFromPane(paneContent, usedSession);
+      return { ...a, activity_status: activity };
+    }
+
+    // Fallback to has_work flag if tmux capture fails
+    return { ...a, activity_status: a.has_work ? 'working' : 'idle' };
+  }));
+
+  return enrichedAgents;
+}
+
 // Ensure PATH includes go binaries
 process.env.PATH = `${process.env.HOME}/go/bin:${process.env.PATH}`;
 
@@ -67,6 +234,9 @@ async function getGtJson(args) {
 app.get('/api/status', async (req, res) => {
   try {
     const status = await getGtJson('status --json');
+    if (status && status.agents) {
+      status.agents = await getAgentActivityStatus(status.agents);
+    }
     res.json(status);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -83,11 +253,12 @@ app.get('/api/ready', async (req, res) => {
   }
 });
 
-// Get polecat list
+// Get polecat list with activity detection
 app.get('/api/polecats', async (req, res) => {
   try {
     const polecats = await getGtJson('polecat list --all --json');
-    res.json(polecats || []);
+    const enrichedPolecats = await getPolecatActivityStatus(polecats || []);
+    res.json(enrichedPolecats);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -344,14 +515,15 @@ setInterval(async () => {
 wss.on('connection', async (ws) => {
   console.log('Client connected');
 
-  // Send initial status with polecats
+  // Send initial status with polecats and agents (including activity detection)
   try {
     const [status, polecats] = await Promise.all([
       getGtJson('status --json'),
       getGtJson('polecat list --all --json')
     ]);
     if (status) {
-      status.polecats = polecats || [];
+      status.polecats = await getPolecatActivityStatus(polecats || []);
+      status.agents = await getAgentActivityStatus(status.agents || []);
       ws.send(JSON.stringify({ type: 'status', data: status }));
     }
   } catch (e) {
@@ -397,7 +569,7 @@ wss.on('connection', async (ws) => {
   });
 });
 
-// Periodic status broadcast
+// Periodic status broadcast with activity detection
 setInterval(async () => {
   if (wss.clients.size > 0) {
     try {
@@ -406,8 +578,9 @@ setInterval(async () => {
         getGtJson('polecat list --all --json')
       ]);
       if (status) {
-        // Include polecats in status update
-        status.polecats = polecats || [];
+        // Include polecats and agents with activity detection in status update
+        status.polecats = await getPolecatActivityStatus(polecats || []);
+        status.agents = await getAgentActivityStatus(status.agents || []);
         wss.clients.forEach(client => {
           if (client.readyState === 1) {
             client.send(JSON.stringify({ type: 'status', data: status }));
