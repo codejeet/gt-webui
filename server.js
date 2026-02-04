@@ -220,6 +220,51 @@ app.get('/api/log', async (req, res) => {
   }
 });
 
+// Helper to run shell commands (for tmux)
+function runShellCommand(cmd) {
+  return new Promise((resolve, reject) => {
+    exec(cmd, {
+      env: process.env,
+      maxBuffer: 1024 * 1024 * 10
+    }, (error, stdout, stderr) => {
+      if (error) {
+        reject(new Error(stderr || error.message));
+        return;
+      }
+      resolve(stdout);
+    });
+  });
+}
+
+// Get available tmux sessions for spy view
+app.get('/api/sessions', async (req, res) => {
+  try {
+    const output = await runShellCommand('tmux list-sessions -F "#{session_name}"');
+    const sessions = output.trim().split('\n').filter(s => s);
+    res.json(sessions);
+  } catch (e) {
+    // No sessions or tmux not running
+    res.json([]);
+  }
+});
+
+// Get tmux pane capture for a session
+app.get('/api/spy/:session', async (req, res) => {
+  try {
+    const session = req.params.session;
+    // Validate session name (alphanumeric, dash, underscore)
+    if (!/^[a-zA-Z0-9_\-]+$/.test(session)) {
+      res.status(400).json({ error: 'Invalid session name' });
+      return;
+    }
+    // Capture the pane output (last 200 lines)
+    const output = await runShellCommand(`tmux capture-pane -t "${session}:0" -p -S -200`);
+    res.json({ session, output });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // WebSocket: Stream live events
 function setupEventWatcher() {
   if (!fs.existsSync(EVENTS_FILE)) {
@@ -276,6 +321,25 @@ function setupEventWatcher() {
   });
 }
 
+// Track spy subscriptions per client
+const spySubscriptions = new Map();
+
+// Spy streaming interval (captures pane every 500ms for subscribed clients)
+setInterval(async () => {
+  for (const [ws, session] of spySubscriptions.entries()) {
+    if (ws.readyState !== 1) {
+      spySubscriptions.delete(ws);
+      continue;
+    }
+    try {
+      const output = await runShellCommand(`tmux capture-pane -t "${session}:0" -p -S -200`);
+      ws.send(JSON.stringify({ type: 'spy', session, output }));
+    } catch (e) {
+      ws.send(JSON.stringify({ type: 'spy_error', session, error: e.message }));
+    }
+  }
+}, 500);
+
 // WebSocket connection handling
 wss.on('connection', async (ws) => {
   console.log('Client connected');
@@ -294,12 +358,42 @@ wss.on('connection', async (ws) => {
     console.error('Error sending initial status:', e.message);
   }
 
+  // Send available sessions for spy view
+  try {
+    const sessionsOutput = await runShellCommand('tmux list-sessions -F "#{session_name}"');
+    const sessions = sessionsOutput.trim().split('\n').filter(s => s);
+    ws.send(JSON.stringify({ type: 'sessions', sessions }));
+  } catch (e) {
+    ws.send(JSON.stringify({ type: 'sessions', sessions: [] }));
+  }
+
+  // Handle incoming messages for spy subscriptions
+  ws.on('message', (data) => {
+    try {
+      const msg = JSON.parse(data.toString());
+      if (msg.type === 'spy_subscribe' && msg.session) {
+        // Validate session name
+        if (/^[a-zA-Z0-9_\-]+$/.test(msg.session)) {
+          spySubscriptions.set(ws, msg.session);
+          console.log(`Client subscribed to spy: ${msg.session}`);
+        }
+      } else if (msg.type === 'spy_unsubscribe') {
+        spySubscriptions.delete(ws);
+        console.log('Client unsubscribed from spy');
+      }
+    } catch (e) {
+      // Ignore invalid messages
+    }
+  });
+
   ws.on('close', () => {
     console.log('Client disconnected');
+    spySubscriptions.delete(ws);
   });
 
   ws.on('error', (err) => {
     console.error('WebSocket error:', err.message);
+    spySubscriptions.delete(ws);
   });
 });
 

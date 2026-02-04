@@ -630,6 +630,83 @@
             justify-content: space-between;
         }
 
+        /* Spy View */
+        .spy-section {
+            margin-bottom: 2rem;
+        }
+
+        .spy-header {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            margin-bottom: 1rem;
+        }
+
+        .spy-title {
+            font-size: 0.75rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+        }
+
+        .spy-select {
+            padding: 0.4rem 0.75rem;
+            border: 1px solid var(--gray-200);
+            font-size: 0.875rem;
+            font-family: inherit;
+            background: var(--white);
+            min-width: 200px;
+        }
+
+        .spy-select:focus {
+            outline: none;
+            border-color: var(--black);
+        }
+
+        .spy-terminal {
+            background: var(--black);
+            border: 1px solid var(--black);
+            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+            font-size: 0.75rem;
+            line-height: 1.4;
+            color: var(--gray-200);
+            padding: 1rem;
+            height: 400px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+
+        .spy-terminal::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        .spy-terminal::-webkit-scrollbar-track {
+            background: var(--gray-600);
+        }
+
+        .spy-terminal::-webkit-scrollbar-thumb {
+            background: var(--gray-400);
+        }
+
+        .spy-status {
+            font-size: 0.65rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            padding: 0.3em 0.6em;
+            margin-left: 0.5rem;
+        }
+
+        .spy-status.streaming {
+            background: var(--green);
+            color: var(--white);
+        }
+
+        .spy-status.stopped {
+            background: var(--gray-200);
+        }
+
         /* Responsive */
         @media (max-width: 1200px) {
             .main-grid {
@@ -776,6 +853,18 @@
                 <button id="sendToMayor" onclick="sendToMayor()">Send</button>
             </div>
         </div>
+
+        <!-- Spy View -->
+        <div class="spy-section">
+            <div class="spy-header">
+                <div class="spy-title">Spy View</div>
+                <select class="spy-select" id="spySessionSelect" onchange="selectSpySession()">
+                    <option value="">Select session to watch...</option>
+                </select>
+                <span class="spy-status stopped" id="spyStatus">Stopped</span>
+            </div>
+            <div class="spy-terminal" id="spyTerminal">Select a session above to start watching live terminal output...</div>
+        </div>
     </main>
 
     <!-- Log Panel -->
@@ -800,7 +889,10 @@
         agents: [],
         polecats: [],
         connected: false,
-        selectedRig: null
+        selectedRig: null,
+        sessions: [],
+        spySession: null,
+        spyOutput: ''
     };
 
     let ws = null;
@@ -1049,6 +1141,28 @@
                     renderLogs();
                 }
                 break;
+
+            case 'sessions':
+                // Available tmux sessions for spy view
+                state.sessions = msg.sessions || [];
+                renderSpySessions();
+                break;
+
+            case 'spy':
+                // Live terminal output
+                if (msg.session === state.spySession) {
+                    state.spyOutput = msg.output || '';
+                    renderSpyTerminal();
+                }
+                break;
+
+            case 'spy_error':
+                // Spy error
+                if (msg.session === state.spySession) {
+                    state.spyOutput = `Error: ${msg.error}`;
+                    renderSpyTerminal();
+                }
+                break;
         }
     }
 
@@ -1245,6 +1359,65 @@
         });
         if (state.logs.length > 50) state.logs.pop();
         renderLogs();
+    }
+
+    // Spy view functions
+    function renderSpySessions() {
+        const select = document.getElementById('spySessionSelect');
+        if (!select) return;
+
+        // Preserve current selection
+        const currentValue = select.value;
+
+        select.innerHTML = '<option value="">Select session to watch...</option>' +
+            state.sessions.map(s => `<option value="${s}" ${s === currentValue ? 'selected' : ''}>${s}</option>`).join('');
+    }
+
+    function selectSpySession() {
+        const select = document.getElementById('spySessionSelect');
+        const session = select.value;
+        const status = document.getElementById('spyStatus');
+        const terminal = document.getElementById('spyTerminal');
+
+        if (session && session !== state.spySession) {
+            // Subscribe to new session
+            state.spySession = session;
+            state.spyOutput = 'Connecting to session...';
+            if (ws && ws.readyState === 1) {
+                ws.send(JSON.stringify({ type: 'spy_subscribe', session }));
+            }
+            status.className = 'spy-status streaming';
+            status.textContent = 'Streaming';
+            addLog('webui', `Started watching ${session}`, 'success');
+        } else if (!session && state.spySession) {
+            // Unsubscribe
+            if (ws && ws.readyState === 1) {
+                ws.send(JSON.stringify({ type: 'spy_unsubscribe' }));
+            }
+            state.spySession = null;
+            state.spyOutput = 'Select a session above to start watching live terminal output...';
+            status.className = 'spy-status stopped';
+            status.textContent = 'Stopped';
+            addLog('webui', 'Stopped spy view', '');
+        }
+
+        renderSpyTerminal();
+    }
+
+    function renderSpyTerminal() {
+        const terminal = document.getElementById('spyTerminal');
+        if (!terminal) return;
+
+        // Escape HTML but preserve terminal formatting
+        const escaped = state.spyOutput
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;');
+
+        terminal.innerHTML = escaped;
+
+        // Auto-scroll to bottom
+        terminal.scrollTop = terminal.scrollHeight;
     }
 
     // Handle enter key in mayor chat
