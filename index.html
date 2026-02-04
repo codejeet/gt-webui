@@ -908,13 +908,14 @@
             }));
         }
 
-        // Fetch polecats
+        // Fetch polecats (now includes activity_status from tmux parsing)
         const polecats = await fetchApi('polecats');
         if (polecats && Array.isArray(polecats)) {
             state.polecats = polecats.map(p => ({
                 name: p.name,
                 rig: p.rig,
-                status: p.running ? (p.has_work ? 'working' : 'idle') : 'offline',
+                // Use activity_status from backend (tmux-based detection) if available
+                status: p.activity_status || (p.running ? (p.has_work ? 'working' : 'idle') : 'offline'),
                 hook: p.hook_bead || p.work_title || null,
                 pid: p.pid
             }));
@@ -957,21 +958,26 @@
         const agentGrid = document.querySelector('.agent-grid');
         if (!agentGrid || !agents.length) return;
 
-        agentGrid.innerHTML = agents.slice(0, 4).map(agent => `
+        agentGrid.innerHTML = agents.slice(0, 4).map(agent => {
+            // Use activity_status from backend (tmux-based detection) if available
+            const status = agent.activity_status || (agent.running ? (agent.has_work ? 'working' : 'idle') : 'offline');
+            const statusClass = status === 'working' ? '' : status;
+            const statusLabel = status === 'working' ? 'Active' : status.charAt(0).toUpperCase() + status.slice(1);
+            return `
             <div class="agent-card">
                 <div class="agent-header">
                     <div>
                         <div class="agent-name">${agent.name}</div>
                         <div class="agent-role">${agent.role || 'Agent'}</div>
                     </div>
-                    <div class="agent-status-badge ${agent.running ? (agent.has_work ? '' : 'idle') : 'offline'}">
-                        ${agent.running ? (agent.has_work ? 'Active' : 'Idle') : 'Offline'}
+                    <div class="agent-status-badge ${statusClass}">
+                        ${statusLabel}
                     </div>
                 </div>
-                ${agent.has_work ? `<div class="agent-task">Working on ${agent.hook_bead || agent.work_title || 'task'}</div>` : ''}
+                ${status === 'working' ? `<div class="agent-task">Working on ${agent.hook_bead || agent.work_title || 'task'}</div>` : ''}
                 ${agent.unread_mail > 0 ? `<div class="agent-task">Unread mail: ${agent.unread_mail}</div>` : ''}
             </div>
-        `).join('');
+        `}).join('');
     }
 
     // WebSocket connection
@@ -1019,12 +1025,13 @@
                     }));
                     state.agents = msg.data.agents || [];
                     state.summary = msg.data.summary || {};
-                    // Extract polecats from rigs if available
+                    // Extract polecats from status (includes activity_status from tmux detection)
                     if (msg.data.polecats) {
                         state.polecats = msg.data.polecats.map(p => ({
                             name: p.name,
                             rig: p.rig,
-                            status: p.running ? (p.has_work ? 'working' : 'idle') : 'offline',
+                            // Use activity_status from backend (tmux-based detection) if available
+                            status: p.activity_status || (p.running ? (p.has_work ? 'working' : 'idle') : 'offline'),
                             hook: p.hook_bead || p.work_title || null,
                             pid: p.pid
                         }));
@@ -1062,8 +1069,9 @@
         let statusLabel = 'Offline';
 
         if (connected) {
+            // Check for active work using status field (which now comes from tmux activity detection)
             const hasActiveWork = state.polecats.some(p => p.status === 'working') ||
-                                  state.agents.some(a => a.running && a.has_work);
+                                  state.agents.some(a => a.activity_status === 'working' || (a.running && a.has_work));
             if (hasActiveWork) {
                 statusClass = '';  // green (default)
                 statusLabel = 'Active';
