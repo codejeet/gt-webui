@@ -338,6 +338,37 @@ app.post('/api/mail/mayor', async (req, res) => {
   }
 });
 
+// Send nudge to a session
+app.post('/api/nudge', async (req, res) => {
+  try {
+    const { session, message } = req.body;
+    if (!session || typeof session !== 'string') {
+      res.status(400).json({ error: 'Session required' });
+      return;
+    }
+    if (!message || typeof message !== 'string') {
+      res.status(400).json({ error: 'Message required' });
+      return;
+    }
+    // Validate session name (alphanumeric, dash, underscore, slash)
+    if (!/^[a-zA-Z0-9_\-\/]+$/.test(session)) {
+      res.status(400).json({ error: 'Invalid session name' });
+      return;
+    }
+    // Limit message length
+    if (message.length > 2000) {
+      res.status(400).json({ error: 'Message too long (max 2000 chars)' });
+      return;
+    }
+    // Escape the message for shell (single quote escaping)
+    const escapedMessage = message.replace(/'/g, "'\\''");
+    await runGtCommand(`nudge ${session} -m '${escapedMessage}'`);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Get recent events from .events.jsonl
 app.get('/api/events', async (req, res) => {
   try {

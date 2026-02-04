@@ -707,6 +707,53 @@
             background: var(--gray-200);
         }
 
+        .spy-nudge {
+            display: flex;
+            padding: 0.75rem 0;
+            gap: 0.5rem;
+            margin-top: 0.5rem;
+        }
+
+        .spy-nudge input {
+            flex: 1;
+            border: 1px solid var(--gray-200);
+            padding: 0.5rem 0.75rem;
+            font-size: 0.875rem;
+            font-family: inherit;
+        }
+
+        .spy-nudge input:focus {
+            outline: none;
+            border-color: var(--black);
+        }
+
+        .spy-nudge input:disabled {
+            background: var(--gray-100);
+            color: var(--gray-400);
+        }
+
+        .spy-nudge button {
+            background: var(--black);
+            color: var(--white);
+            border: none;
+            padding: 0.5rem 1rem;
+            font-size: 0.75rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            cursor: pointer;
+            transition: background 0.15s ease;
+        }
+
+        .spy-nudge button:hover {
+            background: var(--gray-600);
+        }
+
+        .spy-nudge button:disabled {
+            background: var(--gray-200);
+            cursor: not-allowed;
+        }
+
         /* Responsive */
         @media (max-width: 1200px) {
             .main-grid {
@@ -864,6 +911,10 @@
                 <span class="spy-status stopped" id="spyStatus">Stopped</span>
             </div>
             <div class="spy-terminal" id="spyTerminal">Select a session above to start watching live terminal output...</div>
+            <div class="spy-nudge">
+                <input type="text" id="nudgeMessage" placeholder="Send a nudge to this session..." disabled onkeydown="if(event.key==='Enter')sendNudge()">
+                <button id="nudgeButton" onclick="sendNudge()" disabled>Nudge</button>
+            </div>
         </div>
     </main>
 
@@ -1426,6 +1477,49 @@
 
         // Auto-scroll to bottom
         terminal.scrollTop = terminal.scrollHeight;
+
+        // Enable/disable nudge input based on session selection
+        const nudgeInput = document.getElementById('nudgeMessage');
+        const nudgeButton = document.getElementById('nudgeButton');
+        if (nudgeInput && nudgeButton) {
+            const hasSession = !!state.spySession;
+            nudgeInput.disabled = !hasSession;
+            nudgeButton.disabled = !hasSession;
+            nudgeInput.placeholder = hasSession
+                ? `Send a nudge to ${state.spySession}...`
+                : 'Select a session to send nudges...';
+        }
+    }
+
+    async function sendNudge() {
+        const input = document.getElementById('nudgeMessage');
+        const button = document.getElementById('nudgeButton');
+        const message = input.value.trim();
+
+        if (!message || !state.spySession) return;
+
+        button.disabled = true;
+        button.textContent = 'Sending...';
+
+        try {
+            const res = await fetch(`${config.apiBase}/api/nudge`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ session: state.spySession, message })
+            });
+            const data = await res.json();
+            if (data.error) {
+                addLog('nudge', `Failed: ${data.error}`, 'error');
+            } else {
+                addLog('nudge', `Sent to ${state.spySession}: ${message}`, 'success');
+                input.value = '';
+            }
+        } catch (e) {
+            addLog('nudge', `Error: ${e.message}`, 'error');
+        }
+
+        button.disabled = false;
+        button.textContent = 'Nudge';
     }
 
     // Handle enter key in mayor chat
