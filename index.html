@@ -444,7 +444,7 @@
 
         .polecat-item {
             display: grid;
-            grid-template-columns: 1fr 60px 80px 32px 32px;
+            grid-template-columns: 1fr 60px 80px 32px 32px 32px;
             gap: 0.75rem;
             padding: 0.75rem 1rem;
             border-bottom: 1px solid var(--gray-100);
@@ -608,6 +608,126 @@
 
         .autonudge-status.disabled {
             background: var(--gray-200);
+        }
+
+        /* Nudge History */
+        .nudge-history {
+            margin-top: 1rem;
+            border: 1px solid var(--black);
+            background: var(--white);
+            max-height: 200px;
+            overflow-y: auto;
+        }
+
+        .nudge-history-header {
+            padding: 0.5rem 1rem;
+            background: var(--gray-50);
+            border-bottom: 1px solid var(--gray-100);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .nudge-history-title {
+            font-size: 0.7rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+        }
+
+        .nudge-history-count {
+            font-size: 0.65rem;
+            background: var(--gray-200);
+            padding: 0.15em 0.4em;
+        }
+
+        .nudge-history-list {
+            padding: 0;
+        }
+
+        .nudge-history-item {
+            display: grid;
+            grid-template-columns: 65px 100px 1fr 50px;
+            gap: 0.5rem;
+            padding: 0.5rem 1rem;
+            border-bottom: 1px solid var(--gray-100);
+            font-size: 0.75rem;
+            align-items: center;
+        }
+
+        .nudge-history-item:last-child {
+            border-bottom: none;
+        }
+
+        .nudge-history-time {
+            color: var(--gray-400);
+            font-family: monospace;
+            font-size: 0.7rem;
+        }
+
+        .nudge-history-target {
+            font-weight: 600;
+        }
+
+        .nudge-history-message {
+            color: var(--gray-600);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .nudge-history-type {
+            font-size: 0.6rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            padding: 0.2em 0.4em;
+            text-align: center;
+        }
+
+        .nudge-history-type.auto {
+            background: var(--yellow);
+            color: var(--black);
+        }
+
+        .nudge-history-type.manual {
+            background: var(--pink);
+            color: var(--white);
+        }
+
+        /* Per-polecat auto-nudge toggle */
+        .polecat-autonudge {
+            width: 24px;
+            height: 24px;
+            background: transparent;
+            border: 1px solid var(--gray-200);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.6rem;
+            color: var(--gray-400);
+            transition: all 0.15s ease;
+        }
+
+        .polecat-autonudge:hover {
+            border-color: var(--black);
+        }
+
+        .polecat-autonudge.enabled {
+            background: var(--green);
+            border-color: var(--green);
+            color: var(--white);
+        }
+
+        .polecat-autonudge.disabled {
+            background: var(--gray-200);
+            border-color: var(--gray-200);
+            color: var(--gray-600);
+        }
+
+        .polecat-autonudge.inherit {
+            background: transparent;
+            border-style: dashed;
         }
 
         /* Mayor Chat */
@@ -991,6 +1111,15 @@
             <div class="polecat-list" id="polecatList">
                 <!-- Populated by JS -->
             </div>
+            <div class="nudge-history" id="nudgeHistoryContainer">
+                <div class="nudge-history-header">
+                    <span class="nudge-history-title">Nudge History</span>
+                    <span class="nudge-history-count" id="nudgeHistoryCount">0</span>
+                </div>
+                <div class="nudge-history-list" id="nudgeHistoryList">
+                    <!-- Populated by JS -->
+                </div>
+            </div>
         </div>
 
         <!-- Bead Queue -->
@@ -1061,8 +1190,10 @@
         spyOutput: '',
         autoNudge: {
             enabled: false,
-            thresholdMinutes: 5
-        }
+            thresholdMinutes: 5,
+            perPolecatOverrides: {} // key: "rig/name", value: { enabled: bool } or null (inherit)
+        },
+        nudgeHistory: []
     };
 
     let ws = null;
@@ -1190,6 +1321,12 @@
             state.autoNudge.enabled = autoNudgeConfig.enabled;
             state.autoNudge.thresholdMinutes = autoNudgeConfig.threshold_minutes;
             updateAutoNudgeUI();
+        }
+
+        // Fetch nudge history
+        const nudgeHistoryData = await fetchApi('autonudge/history?limit=20');
+        if (nudgeHistoryData && Array.isArray(nudgeHistoryData)) {
+            state.nudgeHistory = nudgeHistoryData;
         }
 
         updateConnectionStatus(state.connected);
@@ -1356,6 +1493,25 @@
                 if (msg.data) {
                     const idleMins = Math.round(msg.data.idle_duration_ms / 60000);
                     addLog('auto-nudge', `Nudged ${msg.data.rig}/${msg.data.name} (idle ${idleMins}m)`, 'success');
+                    // Add to history
+                    if (msg.data.history_entry) {
+                        state.nudgeHistory.unshift(msg.data.history_entry);
+                        if (state.nudgeHistory.length > 50) state.nudgeHistory.pop();
+                        renderNudgeHistory();
+                    }
+                }
+                break;
+
+            case 'manual_nudge':
+                // Manual nudge triggered
+                if (msg.data) {
+                    addLog('nudge', `Nudged ${msg.data.rig}/${msg.data.name}: ${msg.data.message}`, 'success');
+                    // Add to history
+                    if (msg.data.history_entry) {
+                        state.nudgeHistory.unshift(msg.data.history_entry);
+                        if (state.nudgeHistory.length > 50) state.nudgeHistory.pop();
+                        renderNudgeHistory();
+                    }
                 }
                 break;
         }
@@ -1437,10 +1593,17 @@
         document.getElementById('polecatCount').textContent = state.polecats.length;
         polecatList.innerHTML = state.polecats.length ? state.polecats.map(polecat => {
             const idleMins = Math.round((polecat.idle_duration_ms || 0) / 60000);
-            const isStalled = polecat.status === 'idle' && idleMins >= state.autoNudge.thresholdMinutes;
+            const polecatKey = `${polecat.rig}/${polecat.name}`;
+            const override = state.autoNudge.perPolecatOverrides[polecatKey];
+            const effectiveEnabled = override !== undefined ? override.enabled : state.autoNudge.enabled;
+            const isStalled = polecat.status === 'idle' && idleMins >= state.autoNudge.thresholdMinutes && effectiveEnabled;
             const idleTimeClass = isStalled ? 'polecat-idle-time stalled' : 'polecat-idle-time';
             const idleTimeDisplay = polecat.status === 'idle' && idleMins > 0 ? `${idleMins}m` : '-';
             const canNudge = polecat.status !== 'offline';
+            // Auto-nudge toggle state: enabled (green), disabled (gray), inherit (dashed border)
+            const toggleClass = override === undefined ? 'inherit' : (override.enabled ? 'enabled' : 'disabled');
+            const toggleTitle = override === undefined ? 'Auto-nudge: inherit global' : (override.enabled ? 'Auto-nudge: enabled' : 'Auto-nudge: disabled');
+            const toggleIcon = override === undefined ? '○' : (override.enabled ? '✓' : '✗');
             return `
             <div class="polecat-item">
                 <div class="polecat-info">
@@ -1449,10 +1612,13 @@
                 </div>
                 <div class="${idleTimeClass}" title="Idle time">${idleTimeDisplay}</div>
                 <div class="polecat-status ${polecat.status}">${polecat.status}</div>
+                <button class="polecat-autonudge ${toggleClass}" onclick="togglePolecatAutoNudge('${polecat.rig}', '${polecat.name}')" title="${toggleTitle}">${toggleIcon}</button>
                 <button class="polecat-nudge" onclick="nudgePolecat('${polecat.rig}', '${polecat.name}')" title="Nudge polecat" ${canNudge ? '' : 'disabled'}>⚡</button>
                 <button class="polecat-kill" onclick="killPolecat('${polecat.rig}', '${polecat.name}')" title="Kill polecat">×</button>
             </div>
         `}).join('') : '<div class="polecat-item" style="grid-template-columns: 1fr;"><div class="polecat-info"><div class="polecat-name">No active polecats</div></div></div>';
+
+        renderNudgeHistory();
 
         // Render beads
         const beadList = document.getElementById('beadList');
@@ -1479,6 +1645,24 @@
                 <span class="log-message ${log.type}">${log.message}</span>
             </div>
         `).join('') : '<div class="log-entry"><span class="log-message">No events yet</span></div>';
+    }
+
+    function renderNudgeHistory() {
+        const historyList = document.getElementById('nudgeHistoryList');
+        const historyCount = document.getElementById('nudgeHistoryCount');
+        if (!historyList) return;
+
+        historyCount.textContent = state.nudgeHistory.length;
+        historyList.innerHTML = state.nudgeHistory.length ? state.nudgeHistory.slice(0, 20).map(entry => {
+            const time = new Date(entry.timestamp).toLocaleTimeString();
+            return `
+            <div class="nudge-history-item">
+                <span class="nudge-history-time">${time}</span>
+                <span class="nudge-history-target">${entry.polecatKey}</span>
+                <span class="nudge-history-message" title="${entry.message}">${entry.message}</span>
+                <span class="nudge-history-type ${entry.type}">${entry.type}</span>
+            </div>
+        `}).join('') : '<div class="nudge-history-item" style="grid-template-columns: 1fr;"><span style="color: var(--gray-400);">No nudges yet</span></div>';
     }
 
     // Interactive functions
@@ -1606,6 +1790,48 @@
         if (status) {
             status.textContent = state.autoNudge.enabled ? 'Enabled' : 'Disabled';
             status.className = state.autoNudge.enabled ? 'autonudge-status enabled' : 'autonudge-status disabled';
+        }
+    }
+
+    // Toggle per-polecat auto-nudge setting (cycles: inherit -> enabled -> disabled -> inherit)
+    async function togglePolecatAutoNudge(rig, name) {
+        const polecatKey = `${rig}/${name}`;
+        const currentOverride = state.autoNudge.perPolecatOverrides[polecatKey];
+
+        let newBody;
+        if (currentOverride === undefined) {
+            // inherit -> enabled
+            newBody = { enabled: true };
+        } else if (currentOverride.enabled) {
+            // enabled -> disabled
+            newBody = { enabled: false };
+        } else {
+            // disabled -> inherit (clear)
+            newBody = { clear: true };
+        }
+
+        try {
+            const res = await fetch(`${API_BASE}/api/autonudge/polecat/${rig}/${name}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(newBody)
+            });
+            if (res.ok) {
+                const data = await res.json();
+                if (data.override === null) {
+                    delete state.autoNudge.perPolecatOverrides[polecatKey];
+                } else {
+                    state.autoNudge.perPolecatOverrides[polecatKey] = data.override;
+                }
+                render();
+                const stateLabel = data.override === null ? 'inherit global' : (data.override.enabled ? 'enabled' : 'disabled');
+                addLog('webui', `Auto-nudge for ${polecatKey}: ${stateLabel}`, '');
+            } else {
+                const err = await res.json();
+                addLog('webui', `Failed to update auto-nudge: ${err.error}`, 'error');
+            }
+        } catch (e) {
+            addLog('webui', `Error updating auto-nudge: ${e.message}`, 'error');
         }
     }
 

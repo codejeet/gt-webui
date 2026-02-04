@@ -40,11 +40,34 @@ const polecatIdleStartTimes = new Map();
 const autoNudgeConfig = {
   enabled: false,
   thresholdMs: 5 * 60 * 1000, // Default: 5 minutes
-  lastNudgeTime: new Map() // Track last nudge time to prevent spam
+  lastNudgeTime: new Map(), // Track last nudge time to prevent spam
+  perPolecatOverrides: new Map() // Per-polecat enable/disable overrides (key: "rig/name", value: { enabled: bool })
 };
 
 // Minimum time between auto-nudges for same polecat (1 minute)
 const AUTO_NUDGE_COOLDOWN_MS = 60 * 1000;
+
+// Nudge history (circular buffer, max 100 entries)
+const nudgeHistory = [];
+const MAX_NUDGE_HISTORY = 100;
+
+// Add nudge to history
+function addNudgeToHistory(rig, name, type, message, idleDurationMs = null) {
+  const entry = {
+    timestamp: new Date().toISOString(),
+    rig,
+    name,
+    polecatKey: `${rig}/${name}`,
+    type, // 'auto' or 'manual'
+    message,
+    idle_duration_ms: idleDurationMs
+  };
+  nudgeHistory.unshift(entry);
+  if (nudgeHistory.length > MAX_NUDGE_HISTORY) {
+    nudgeHistory.pop();
+  }
+  return entry;
+}
 
 // Detect activity from tmux pane content
 function detectActivityFromPane(paneContent, sessionName) {
@@ -171,18 +194,23 @@ async function getPolecatActivityStatus(polecats) {
   }));
 
   // Check for auto-nudge
-  if (autoNudgeConfig.enabled) {
-    for (const p of enrichedPolecats) {
-      if (p.activity_status === 'idle' && p.idle_duration_ms >= autoNudgeConfig.thresholdMs) {
-        const polecatKey = `${p.rig}/${p.name}`;
-        const lastNudge = autoNudgeConfig.lastNudgeTime.get(polecatKey) || 0;
+  for (const p of enrichedPolecats) {
+    if (p.activity_status === 'idle' && p.idle_duration_ms >= autoNudgeConfig.thresholdMs) {
+      const polecatKey = `${p.rig}/${p.name}`;
 
-        // Check cooldown to prevent nudge spam
-        if (now - lastNudge >= AUTO_NUDGE_COOLDOWN_MS) {
-          autoNudgeConfig.lastNudgeTime.set(polecatKey, now);
-          // Trigger auto-nudge asynchronously (don't await)
-          triggerAutoNudge(p.rig, p.name, p.idle_duration_ms);
-        }
+      // Check per-polecat override first, then global setting
+      const override = autoNudgeConfig.perPolecatOverrides.get(polecatKey);
+      const isEnabled = override !== undefined ? override.enabled : autoNudgeConfig.enabled;
+
+      if (!isEnabled) continue;
+
+      const lastNudge = autoNudgeConfig.lastNudgeTime.get(polecatKey) || 0;
+
+      // Check cooldown to prevent nudge spam
+      if (now - lastNudge >= AUTO_NUDGE_COOLDOWN_MS) {
+        autoNudgeConfig.lastNudgeTime.set(polecatKey, now);
+        // Trigger auto-nudge asynchronously (don't await)
+        triggerAutoNudge(p.rig, p.name, p.idle_duration_ms);
       }
     }
   }
@@ -193,15 +221,18 @@ async function getPolecatActivityStatus(polecats) {
 // Trigger auto-nudge for a stalled polecat
 async function triggerAutoNudge(rig, name, idleDurationMs) {
   const idleMins = Math.round(idleDurationMs / 60000);
+  const message = `Auto-nudge: idle for ${idleMins} minutes`;
   console.log(`Auto-nudging ${rig}/${name} (idle for ${idleMins} minutes)`);
   try {
-    await runGtCommand(`nudge ${rig}/${name} -m "Auto-nudge: idle for ${idleMins} minutes"`);
+    await runGtCommand(`nudge ${rig}/${name} -m "${message}"`);
+    // Record in history
+    const historyEntry = addNudgeToHistory(rig, name, 'auto', message, idleDurationMs);
     // Broadcast auto-nudge event to WebSocket clients
     wss.clients.forEach(client => {
       if (client.readyState === 1) {
         client.send(JSON.stringify({
           type: 'auto_nudge',
-          data: { rig, name, idle_duration_ms: idleDurationMs }
+          data: { rig, name, idle_duration_ms: idleDurationMs, history_entry: historyEntry }
         }));
       }
     });
@@ -398,7 +429,18 @@ app.post('/api/polecat/:rig/:name/nudge', async (req, res) => {
     // Escape the message for shell
     const escapedMessage = message.replace(/'/g, "'\\''");
     await runGtCommand(`nudge ${rig}/${name} -m '${escapedMessage}'`);
-    res.json({ success: true });
+    // Record in history
+    const historyEntry = addNudgeToHistory(rig, name, 'manual', message);
+    // Broadcast manual nudge event to WebSocket clients
+    wss.clients.forEach(client => {
+      if (client.readyState === 1) {
+        client.send(JSON.stringify({
+          type: 'manual_nudge',
+          data: { rig, name, message, history_entry: historyEntry }
+        }));
+      }
+    });
+    res.json({ success: true, history_entry: historyEntry });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -427,6 +469,66 @@ app.post('/api/autonudge/config', (req, res) => {
       enabled: autoNudgeConfig.enabled,
       threshold_minutes: Math.round(autoNudgeConfig.thresholdMs / 60000)
     });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Get nudge history
+app.get('/api/autonudge/history', (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit) || 50, MAX_NUDGE_HISTORY);
+  res.json(nudgeHistory.slice(0, limit));
+});
+
+// Get per-polecat auto-nudge override
+app.get('/api/autonudge/polecat/:rig/:name', (req, res) => {
+  try {
+    const rig = sanitizeId(req.params.rig);
+    const name = sanitizeId(req.params.name);
+    const polecatKey = `${rig}/${name}`;
+    const override = autoNudgeConfig.perPolecatOverrides.get(polecatKey);
+    res.json({
+      rig,
+      name,
+      override: override || null, // null means use global setting
+      global_enabled: autoNudgeConfig.enabled,
+      effective_enabled: override !== undefined ? override.enabled : autoNudgeConfig.enabled
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Set per-polecat auto-nudge override
+app.post('/api/autonudge/polecat/:rig/:name', (req, res) => {
+  try {
+    const rig = sanitizeId(req.params.rig);
+    const name = sanitizeId(req.params.name);
+    const polecatKey = `${rig}/${name}`;
+
+    if (req.body.clear === true) {
+      // Clear override, use global setting
+      autoNudgeConfig.perPolecatOverrides.delete(polecatKey);
+      res.json({
+        success: true,
+        rig,
+        name,
+        override: null,
+        effective_enabled: autoNudgeConfig.enabled
+      });
+    } else if (typeof req.body.enabled === 'boolean') {
+      // Set override
+      autoNudgeConfig.perPolecatOverrides.set(polecatKey, { enabled: req.body.enabled });
+      res.json({
+        success: true,
+        rig,
+        name,
+        override: { enabled: req.body.enabled },
+        effective_enabled: req.body.enabled
+      });
+    } else {
+      res.status(400).json({ error: 'enabled (boolean) or clear (true) required' });
+    }
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
