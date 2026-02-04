@@ -611,61 +611,265 @@
         rigs: [],
         beads: [],
         convoys: [],
-        logs: []
+        logs: [],
+        agents: [],
+        connected: false,
+        selectedRig: null
     };
 
-    // Mock data for demonstration
-    function loadMockData() {
-        state.rigs = [
-            { name: 'gastown', status: 'active', polecats: 0, lastActivity: '2m ago' },
-            { name: 'beads', status: 'active', polecats: 0, lastActivity: '5m ago' },
-            { name: 'morrow_landing', status: 'idle', polecats: 0, lastActivity: '10m ago' },
-            { name: 'scalesystem', status: 'idle', polecats: 0, lastActivity: '15m ago' }
-        ];
+    let ws = null;
 
-        state.beads = [
-            { id: 'hq-o45', title: 'Build Gas Town WebUI', assignee: 'mayor', status: 'hooked' },
-            { id: 'hq-haz', title: 'Deploy Morrow landing page to Vercel', assignee: 'mayor', status: 'completed' },
-            { id: 'hq-83u', title: 'Crop Morrow logo PNG', assignee: 'mayor', status: 'completed' },
-            { id: 'hq-8ky', title: 'Center iPhone mockup in hero section', assignee: 'mayor', status: 'completed' },
-            { id: 'hq-mwb', title: 'Fix awkward Marcello bio text', assignee: 'mayor', status: 'completed' },
-            { id: 'hq-ek8', title: 'AI Chat mockup landscape crop', assignee: 'mayor', status: 'completed' }
-        ];
+    // Configuration: Set these if backend runs on different host
+    // For local development, leave as defaults
+    const config = {
+        apiBase: window.localStorage.getItem('gt_api_base') || window.location.origin,
+        wsHost: window.localStorage.getItem('gt_ws_host') || window.location.host
+    };
 
-        state.convoys = [
-            { name: 'Morrow Landing Deployment', progress: 100, completed: 5, total: 5 },
-            { name: 'Gas Town WebUI', progress: 50, completed: 1, total: 2 }
-        ];
+    const API_BASE = config.apiBase;
+    const WS_URL = `ws://${config.wsHost}/ws`;
 
-        state.logs = [
-            { time: '22:26:31', source: 'mayor', message: 'Hooked hq-o45: Build Gas Town WebUI', type: '' },
-            { time: '22:20:43', source: 'vercel', message: 'Deployed morrowlanding.vercel.app', type: 'success' },
-            { time: '22:20:23', source: 'mayor', message: 'Completed hq-ek8: AI Chat mockup', type: 'success' },
-            { time: '22:17:51', source: 'git', message: 'Pushed to scalesystem/main', type: '' },
-            { time: '22:17:38', source: 'mayor', message: 'Completed hq-mwb: Marcello bio', type: 'success' },
-            { time: '22:14:10', source: 'vercel', message: 'Deployed morrowlanding.vercel.app', type: 'success' },
-            { time: '22:08:49', source: 'mayor', message: 'Completed hq-8ky: Center mockup', type: 'success' },
-            { time: '22:06:47', source: 'mayor', message: 'Completed hq-haz: Deploy Morrow', type: 'success' },
-            { time: '21:55:00', source: 'mayor', message: 'Session started', type: '' }
-        ];
+    // Allow runtime configuration
+    window.gtConfig = {
+        setApiBase: (url) => {
+            window.localStorage.setItem('gt_api_base', url);
+            config.apiBase = url;
+            location.reload();
+        },
+        setWsHost: (host) => {
+            window.localStorage.setItem('gt_ws_host', host);
+            config.wsHost = host;
+            location.reload();
+        },
+        reset: () => {
+            window.localStorage.removeItem('gt_api_base');
+            window.localStorage.removeItem('gt_ws_host');
+            location.reload();
+        }
+    };
+
+    // API Functions
+    async function fetchApi(endpoint) {
+        try {
+            const res = await fetch(`${API_BASE}/api/${endpoint}`);
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            return await res.json();
+        } catch (e) {
+            console.error(`API error (${endpoint}):`, e);
+            return null;
+        }
+    }
+
+    // Load data from backend
+    async function loadData() {
+        // Fetch status (rigs, agents, summary)
+        const status = await fetchApi('status');
+        if (!status) {
+            // Backend unavailable - show placeholder
+            if (!state.rigs.length) {
+                state.rigs = [{ name: 'connecting...', status: 'idle', polecats: 0 }];
+                state.logs = [{ time: new Date().toLocaleTimeString(), source: 'webui', message: 'Waiting for backend connection...', type: '' }];
+            }
+            updateConnectionStatus(false);
+            render();
+            return;
+        }
+        if (status) {
+            state.rigs = (status.rigs || []).map(rig => ({
+                name: rig.name,
+                status: (rig.polecat_count > 0 || rig.has_witness) ? 'active' : 'idle',
+                polecats: rig.polecat_count || 0,
+                agents: rig.agents || [],
+                hooks: rig.hooks || []
+            }));
+            state.agents = status.agents || [];
+            state.summary = status.summary || {};
+
+            // Update agent cards in sidebar
+            updateAgentCards(state.agents);
+        }
+
+        // Fetch ready work (beads/convoys)
+        const ready = await fetchApi('ready');
+        if (ready && ready.sources) {
+            const allIssues = ready.sources.flatMap(s => s.issues || []);
+            state.beads = allIssues.map(issue => ({
+                id: issue.id,
+                title: issue.title.replace(/^Work: /, ''),
+                assignee: issue.created_by || '-',
+                status: issue.issue_type === 'convoy' ? 'pending' : (issue.status === 'open' ? 'pending' : 'completed')
+            }));
+            // Convoys are issues with type 'convoy'
+            state.convoys = allIssues
+                .filter(i => i.issue_type === 'convoy')
+                .slice(0, 5)
+                .map(c => ({
+                    name: c.title.replace(/^Work: /, ''),
+                    progress: c.status === 'closed' ? 100 : 50,
+                    completed: c.status === 'closed' ? 1 : 0,
+                    total: 1
+                }));
+        }
+
+        // Fetch events for log feed
+        const events = await fetchApi('events?limit=30');
+        if (events) {
+            state.logs = events.map(e => ({
+                time: new Date(e.ts).toLocaleTimeString(),
+                source: e.actor || e.source,
+                message: formatEventMessage(e),
+                type: getEventType(e)
+            }));
+        }
+
+        render();
+    }
+
+    // Format event message
+    function formatEventMessage(event) {
+        const p = event.payload || {};
+        switch (event.type) {
+            case 'sling': return `Slung ${p.bead} to ${p.target}`;
+            case 'spawn': return `Spawned polecat ${p.polecat} in ${p.rig}`;
+            case 'nudge': return `Nudged ${p.target}: ${p.reason || ''}`;
+            case 'handoff': return `Handoff: ${p.subject || 'session'}`;
+            case 'session_start': return `Session started (${p.role || 'agent'})`;
+            case 'mail': return `Mail to ${p.to}: ${p.subject}`;
+            default: return event.type;
+        }
+    }
+
+    // Get event type for styling
+    function getEventType(event) {
+        switch (event.type) {
+            case 'sling':
+            case 'spawn':
+            case 'session_start':
+                return 'success';
+            case 'mail':
+                return event.payload?.subject?.includes('RECOVERY') ? 'error' : '';
+            default:
+                return '';
+        }
+    }
+
+    // Update agent cards in sidebar
+    function updateAgentCards(agents) {
+        const agentGrid = document.querySelector('.agent-grid');
+        if (!agentGrid || !agents.length) return;
+
+        agentGrid.innerHTML = agents.slice(0, 4).map(agent => `
+            <div class="agent-card">
+                <div class="agent-header">
+                    <div>
+                        <div class="agent-name">${agent.name}</div>
+                        <div class="agent-role">${agent.role || 'Agent'}</div>
+                    </div>
+                    <div class="agent-status-badge ${agent.running ? (agent.has_work ? '' : 'idle') : 'offline'}">
+                        ${agent.running ? (agent.has_work ? 'Active' : 'Idle') : 'Offline'}
+                    </div>
+                </div>
+                ${agent.has_work ? `<div class="agent-task">Working on ${agent.hook_bead || agent.work_title || 'task'}</div>` : ''}
+                ${agent.unread_mail > 0 ? `<div class="agent-task">Unread mail: ${agent.unread_mail}</div>` : ''}
+            </div>
+        `).join('');
+    }
+
+    // WebSocket connection
+    function connectWebSocket() {
+        ws = new WebSocket(WS_URL);
+
+        ws.onopen = () => {
+            console.log('WebSocket connected');
+            state.connected = true;
+            updateConnectionStatus(true);
+        };
+
+        ws.onmessage = (event) => {
+            try {
+                const msg = JSON.parse(event.data);
+                handleWsMessage(msg);
+            } catch (e) {
+                console.error('WS parse error:', e);
+            }
+        };
+
+        ws.onclose = () => {
+            console.log('WebSocket disconnected, reconnecting...');
+            state.connected = false;
+            updateConnectionStatus(false);
+            setTimeout(connectWebSocket, 3000);
+        };
+
+        ws.onerror = (err) => {
+            console.error('WebSocket error:', err);
+        };
+    }
+
+    // Handle WebSocket messages
+    function handleWsMessage(msg) {
+        switch (msg.type) {
+            case 'status':
+                // Full status update
+                if (msg.data) {
+                    state.rigs = (msg.data.rigs || []).map(rig => ({
+                        name: rig.name,
+                        status: (rig.polecat_count > 0 || rig.has_witness) ? 'active' : 'idle',
+                        polecats: rig.polecat_count || 0,
+                        agents: rig.agents || []
+                    }));
+                    state.agents = msg.data.agents || [];
+                    state.summary = msg.data.summary || {};
+                    updateAgentCards(state.agents);
+                    render();
+                }
+                break;
+
+            case 'event':
+                // New event
+                if (msg.data) {
+                    const logEntry = {
+                        time: new Date(msg.data.ts).toLocaleTimeString(),
+                        source: msg.data.actor || msg.data.source,
+                        message: formatEventMessage(msg.data),
+                        type: getEventType(msg.data)
+                    };
+                    state.logs.unshift(logEntry);
+                    if (state.logs.length > 50) state.logs.pop();
+                    renderLogs();
+                }
+                break;
+        }
+    }
+
+    // Update connection status indicator
+    function updateConnectionStatus(connected) {
+        const dot = document.querySelector('.status-dot');
+        const label = document.querySelector('.status-indicator span');
+        if (dot) {
+            dot.className = `status-dot ${connected ? '' : 'offline'}`;
+        }
+        if (label) {
+            label.textContent = connected ? 'Live' : 'Offline';
+        }
     }
 
     function render() {
         // Update stats
         document.getElementById('statRigs').textContent = state.rigs.length;
-        document.getElementById('statActive').textContent = state.rigs.reduce((a, r) => a + r.polecats, 0);
-        document.getElementById('statPending').textContent = state.beads.filter(b => b.status === 'hooked').length;
+        document.getElementById('statActive').textContent = state.summary?.polecat_count || state.rigs.reduce((a, r) => a + r.polecats, 0);
+        document.getElementById('statPending').textContent = state.beads.filter(b => b.status === 'hooked' || b.status === 'pending').length;
         document.getElementById('statCompleted').textContent = state.beads.filter(b => b.status === 'completed').length;
         document.getElementById('lastUpdate').textContent = new Date().toLocaleTimeString();
 
         // Render rigs
         const rigList = document.getElementById('rigList');
         rigList.innerHTML = state.rigs.map((rig, i) => `
-            <div class="rig-item ${i === 0 ? 'active' : ''}">
+            <div class="rig-item ${state.selectedRig === rig.name ? 'active' : ''}" onclick="selectRig('${rig.name}')">
                 <div class="rig-icon">${rig.name.substring(0, 2).toUpperCase()}</div>
                 <div class="rig-info">
                     <div class="rig-name">${rig.name}</div>
-                    <div class="rig-meta">${rig.polecats} polecats · ${rig.lastActivity}</div>
+                    <div class="rig-meta">${rig.polecats} polecats</div>
                 </div>
                 <div class="rig-status" style="background: ${rig.status === 'active' ? 'var(--green)' : 'var(--yellow)'}"></div>
             </div>
@@ -674,7 +878,7 @@
         // Render convoys
         const convoyList = document.getElementById('convoyList');
         document.getElementById('convoyCount').textContent = state.convoys.length;
-        convoyList.innerHTML = state.convoys.map(convoy => `
+        convoyList.innerHTML = state.convoys.length ? state.convoys.map(convoy => `
             <div class="convoy-item">
                 <div class="convoy-header">
                     <div class="convoy-name">${convoy.name}</div>
@@ -685,36 +889,55 @@
                 </div>
                 <div class="convoy-tasks">${convoy.completed}/${convoy.total} tasks completed</div>
             </div>
-        `).join('');
+        `).join('') : '<div class="convoy-item"><div class="convoy-name">No active convoys</div></div>';
 
         // Render beads
         const beadList = document.getElementById('beadList');
         document.getElementById('beadCount').textContent = state.beads.length;
-        beadList.innerHTML = state.beads.map(bead => `
-            <div class="bead-item">
+        beadList.innerHTML = state.beads.length ? state.beads.map(bead => `
+            <div class="bead-item" onclick="showBead('${bead.id}')">
                 <div class="bead-id">${bead.id}</div>
                 <div class="bead-title">${bead.title}</div>
                 <div class="bead-assignee">${bead.assignee}</div>
                 <div class="bead-status ${bead.status}">${bead.status}</div>
             </div>
-        `).join('');
+        `).join('') : '<div class="bead-item"><div class="bead-title">No beads in queue</div></div>';
 
-        // Render logs
+        renderLogs();
+    }
+
+    function renderLogs() {
         const logContent = document.getElementById('logContent');
-        logContent.innerHTML = state.logs.map(log => `
+        logContent.innerHTML = state.logs.length ? state.logs.map(log => `
             <div class="log-entry">
                 <span class="log-time">${log.time}</span>
                 <span class="log-source">[${log.source}]</span>
                 <span class="log-message ${log.type}">${log.message}</span>
             </div>
-        `).join('');
+        `).join('') : '<div class="log-entry"><span class="log-message">No events yet</span></div>';
+    }
+
+    // Interactive functions
+    function selectRig(rigName) {
+        state.selectedRig = state.selectedRig === rigName ? null : rigName;
+        render();
+    }
+
+    async function showBead(beadId) {
+        const data = await fetchApi(`bead/${beadId}`);
+        if (data && data.content) {
+            alert(`Bead ${beadId}:\n\n${data.content.slice(0, 500)}${data.content.length > 500 ? '...' : ''}`);
+        }
     }
 
     // Initialize
-    loadMockData();
-    render();
+    loadData();
+    connectWebSocket();
 
-    // Auto-refresh timestamp
+    // Periodic refresh (fallback if WS fails)
+    setInterval(loadData, 30000);
+
+    // Update timestamp every second
     setInterval(() => {
         document.getElementById('lastUpdate').textContent = new Date().toLocaleTimeString();
     }, 1000);
