@@ -33,6 +33,19 @@ const IDLE_PATTERNS = [
 // Cache for pane content to detect changes
 const paneContentCache = new Map();
 
+// Track when polecats became idle (for idle duration calculation)
+const polecatIdleStartTimes = new Map();
+
+// Auto-nudge configuration
+const autoNudgeConfig = {
+  enabled: false,
+  thresholdMs: 5 * 60 * 1000, // Default: 5 minutes
+  lastNudgeTime: new Map() // Track last nudge time to prevent spam
+};
+
+// Minimum time between auto-nudges for same polecat (1 minute)
+const AUTO_NUDGE_COOLDOWN_MS = 60 * 1000;
+
 // Detect activity from tmux pane content
 function detectActivityFromPane(paneContent, sessionName) {
   if (!paneContent || paneContent.trim() === '') {
@@ -99,11 +112,16 @@ async function getPolecatActivityStatus(polecats) {
     return polecats;
   }
 
+  const now = Date.now();
   const enrichedPolecats = await Promise.all(polecats.map(async (p) => {
+    const polecatKey = `${p.rig}/${p.name}`;
+
     // Check both 'running' and 'session_running' fields
     const isRunning = p.running || p.session_running;
     if (!isRunning) {
-      return { ...p, activity_status: 'offline' };
+      // Clear idle tracking for offline polecats
+      polecatIdleStartTimes.delete(polecatKey);
+      return { ...p, activity_status: 'offline', idle_duration_ms: 0 };
     }
 
     // Try to capture tmux pane for this polecat
@@ -125,16 +143,71 @@ async function getPolecatActivityStatus(polecats) {
       }
     }
 
+    let activity;
     if (paneContent !== null) {
-      const activity = detectActivityFromPane(paneContent, usedSession);
-      return { ...p, activity_status: activity };
+      activity = detectActivityFromPane(paneContent, usedSession);
+    } else {
+      // Fallback to has_work flag if tmux capture fails
+      activity = p.has_work ? 'working' : 'idle';
     }
 
-    // Fallback to has_work flag if tmux capture fails
-    return { ...p, activity_status: p.has_work ? 'working' : 'idle' };
+    // Track idle duration
+    let idleDurationMs = 0;
+    if (activity === 'idle') {
+      if (!polecatIdleStartTimes.has(polecatKey)) {
+        polecatIdleStartTimes.set(polecatKey, now);
+      }
+      idleDurationMs = now - polecatIdleStartTimes.get(polecatKey);
+    } else {
+      // Reset idle tracking when working
+      polecatIdleStartTimes.delete(polecatKey);
+    }
+
+    return {
+      ...p,
+      activity_status: activity,
+      idle_duration_ms: idleDurationMs
+    };
   }));
 
+  // Check for auto-nudge
+  if (autoNudgeConfig.enabled) {
+    for (const p of enrichedPolecats) {
+      if (p.activity_status === 'idle' && p.idle_duration_ms >= autoNudgeConfig.thresholdMs) {
+        const polecatKey = `${p.rig}/${p.name}`;
+        const lastNudge = autoNudgeConfig.lastNudgeTime.get(polecatKey) || 0;
+
+        // Check cooldown to prevent nudge spam
+        if (now - lastNudge >= AUTO_NUDGE_COOLDOWN_MS) {
+          autoNudgeConfig.lastNudgeTime.set(polecatKey, now);
+          // Trigger auto-nudge asynchronously (don't await)
+          triggerAutoNudge(p.rig, p.name, p.idle_duration_ms);
+        }
+      }
+    }
+  }
+
   return enrichedPolecats;
+}
+
+// Trigger auto-nudge for a stalled polecat
+async function triggerAutoNudge(rig, name, idleDurationMs) {
+  const idleMins = Math.round(idleDurationMs / 60000);
+  console.log(`Auto-nudging ${rig}/${name} (idle for ${idleMins} minutes)`);
+  try {
+    await runGtCommand(`nudge ${rig}/${name} -m "Auto-nudge: idle for ${idleMins} minutes"`);
+    // Broadcast auto-nudge event to WebSocket clients
+    wss.clients.forEach(client => {
+      if (client.readyState === 1) {
+        client.send(JSON.stringify({
+          type: 'auto_nudge',
+          data: { rig, name, idle_duration_ms: idleDurationMs }
+        }));
+      }
+    });
+  } catch (e) {
+    console.error(`Auto-nudge failed for ${rig}/${name}:`, e.message);
+  }
 }
 
 // Get activity status for agents (mayor, deacon, etc.)
@@ -311,6 +384,49 @@ app.post('/api/polecat/:rig/:name/kill', async (req, res) => {
     const name = sanitizeId(req.params.name);
     await runGtCommand(`polecat kill ${rig}/${name}`);
     res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Nudge a polecat
+app.post('/api/polecat/:rig/:name/nudge', async (req, res) => {
+  try {
+    const rig = sanitizeId(req.params.rig);
+    const name = sanitizeId(req.params.name);
+    const message = req.body.message || 'Manual nudge from WebUI';
+    // Escape the message for shell
+    const escapedMessage = message.replace(/'/g, "'\\''");
+    await runGtCommand(`nudge ${rig}/${name} -m '${escapedMessage}'`);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Get auto-nudge configuration
+app.get('/api/autonudge/config', (req, res) => {
+  res.json({
+    enabled: autoNudgeConfig.enabled,
+    threshold_minutes: Math.round(autoNudgeConfig.thresholdMs / 60000)
+  });
+});
+
+// Update auto-nudge configuration
+app.post('/api/autonudge/config', (req, res) => {
+  try {
+    if (typeof req.body.enabled === 'boolean') {
+      autoNudgeConfig.enabled = req.body.enabled;
+    }
+    if (typeof req.body.threshold_minutes === 'number') {
+      const mins = Math.max(1, Math.min(60, req.body.threshold_minutes)); // Clamp 1-60 minutes
+      autoNudgeConfig.thresholdMs = mins * 60 * 1000;
+    }
+    res.json({
+      success: true,
+      enabled: autoNudgeConfig.enabled,
+      threshold_minutes: Math.round(autoNudgeConfig.thresholdMs / 60000)
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

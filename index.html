@@ -444,8 +444,8 @@
 
         .polecat-item {
             display: grid;
-            grid-template-columns: 1fr 80px 32px;
-            gap: 1rem;
+            grid-template-columns: 1fr 60px 80px 32px 32px;
+            gap: 0.75rem;
             padding: 0.75rem 1rem;
             border-bottom: 1px solid var(--gray-100);
             align-items: center;
@@ -484,6 +484,42 @@
         .polecat-status.idle { background: var(--yellow); color: var(--black); }
         .polecat-status.offline { background: var(--gray-200); }
 
+        .polecat-idle-time {
+            font-size: 0.65rem;
+            color: var(--gray-400);
+            text-align: center;
+        }
+
+        .polecat-idle-time.stalled {
+            color: var(--red);
+            font-weight: 600;
+        }
+
+        .polecat-nudge {
+            width: 24px;
+            height: 24px;
+            background: transparent;
+            border: 1px solid var(--gray-200);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.7rem;
+            color: var(--gray-400);
+            transition: all 0.15s ease;
+        }
+
+        .polecat-nudge:hover {
+            background: var(--yellow);
+            border-color: var(--yellow);
+            color: var(--black);
+        }
+
+        .polecat-nudge:disabled {
+            opacity: 0.3;
+            cursor: not-allowed;
+        }
+
         .polecat-kill {
             width: 24px;
             height: 24px;
@@ -502,6 +538,76 @@
             background: var(--red);
             border-color: var(--red);
             color: var(--white);
+        }
+
+        /* Auto-nudge config */
+        .autonudge-config {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            padding: 0.75rem 1rem;
+            background: var(--white);
+            border: 1px solid var(--black);
+            margin-bottom: 1rem;
+        }
+
+        .autonudge-toggle {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .autonudge-toggle input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            cursor: pointer;
+        }
+
+        .autonudge-toggle label {
+            font-size: 0.75rem;
+            font-weight: 600;
+            cursor: pointer;
+        }
+
+        .autonudge-threshold {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin-left: auto;
+        }
+
+        .autonudge-threshold label {
+            font-size: 0.7rem;
+            color: var(--gray-600);
+        }
+
+        .autonudge-threshold input[type="number"] {
+            width: 50px;
+            padding: 0.25rem 0.5rem;
+            border: 1px solid var(--gray-200);
+            font-size: 0.75rem;
+            text-align: center;
+        }
+
+        .autonudge-threshold input[type="number"]:focus {
+            outline: none;
+            border-color: var(--black);
+        }
+
+        .autonudge-status {
+            font-size: 0.65rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            padding: 0.2em 0.5em;
+        }
+
+        .autonudge-status.enabled {
+            background: var(--green);
+            color: var(--white);
+        }
+
+        .autonudge-status.disabled {
+            background: var(--gray-200);
         }
 
         /* Mayor Chat */
@@ -870,6 +976,18 @@
                 <div class="queue-title">Active Polecats</div>
                 <div class="queue-count" id="polecatCount">0</div>
             </div>
+            <div class="autonudge-config">
+                <div class="autonudge-toggle">
+                    <input type="checkbox" id="autonudgeEnabled" onchange="toggleAutoNudge()">
+                    <label for="autonudgeEnabled">Auto-nudge stalled polecats</label>
+                </div>
+                <div class="autonudge-threshold">
+                    <label for="autonudgeThreshold">Idle threshold:</label>
+                    <input type="number" id="autonudgeThreshold" min="1" max="60" value="5" onchange="updateAutoNudgeThreshold()">
+                    <span style="font-size: 0.7rem; color: var(--gray-600);">min</span>
+                </div>
+                <span class="autonudge-status disabled" id="autonudgeStatus">Disabled</span>
+            </div>
             <div class="polecat-list" id="polecatList">
                 <!-- Populated by JS -->
             </div>
@@ -940,7 +1058,11 @@
         selectedRig: null,
         sessions: [],
         spySession: null,
-        spyOutput: ''
+        spyOutput: '',
+        autoNudge: {
+            enabled: false,
+            thresholdMinutes: 5
+        }
     };
 
     let ws = null;
@@ -1048,7 +1170,7 @@
             }));
         }
 
-        // Fetch polecats (now includes activity_status from tmux parsing)
+        // Fetch polecats (now includes activity_status and idle_duration_ms from tmux parsing)
         const polecats = await fetchApi('polecats');
         if (polecats && Array.isArray(polecats)) {
             state.polecats = polecats.map(p => ({
@@ -1057,8 +1179,17 @@
                 // Use activity_status from backend (tmux-based detection) if available
                 status: p.activity_status || (p.running ? (p.has_work ? 'working' : 'idle') : 'offline'),
                 hook: p.hook_bead || p.work_title || null,
-                pid: p.pid
+                pid: p.pid,
+                idle_duration_ms: p.idle_duration_ms || 0
             }));
+        }
+
+        // Fetch auto-nudge config
+        const autoNudgeConfig = await fetchApi('autonudge/config');
+        if (autoNudgeConfig) {
+            state.autoNudge.enabled = autoNudgeConfig.enabled;
+            state.autoNudge.thresholdMinutes = autoNudgeConfig.threshold_minutes;
+            updateAutoNudgeUI();
         }
 
         updateConnectionStatus(state.connected);
@@ -1165,7 +1296,7 @@
                     }));
                     state.agents = msg.data.agents || [];
                     state.summary = msg.data.summary || {};
-                    // Extract polecats from status (includes activity_status from tmux detection)
+                    // Extract polecats from status (includes activity_status and idle_duration_ms from tmux detection)
                     if (msg.data.polecats) {
                         state.polecats = msg.data.polecats.map(p => ({
                             name: p.name,
@@ -1173,7 +1304,8 @@
                             // Use activity_status from backend (tmux-based detection) if available
                             status: p.activity_status || (p.running ? (p.has_work ? 'working' : 'idle') : 'offline'),
                             hook: p.hook_bead || p.work_title || null,
-                            pid: p.pid
+                            pid: p.pid,
+                            idle_duration_ms: p.idle_duration_ms || 0
                         }));
                     }
                     updateAgentCards(state.agents);
@@ -1216,6 +1348,14 @@
                 if (msg.session === state.spySession) {
                     state.spyOutput = `Error: ${msg.error}`;
                     renderSpyTerminal();
+                }
+                break;
+
+            case 'auto_nudge':
+                // Auto-nudge triggered
+                if (msg.data) {
+                    const idleMins = Math.round(msg.data.idle_duration_ms / 60000);
+                    addLog('auto-nudge', `Nudged ${msg.data.rig}/${msg.data.name} (idle ${idleMins}m)`, 'success');
                 }
                 break;
         }
@@ -1295,16 +1435,24 @@
         // Render polecats
         const polecatList = document.getElementById('polecatList');
         document.getElementById('polecatCount').textContent = state.polecats.length;
-        polecatList.innerHTML = state.polecats.length ? state.polecats.map(polecat => `
+        polecatList.innerHTML = state.polecats.length ? state.polecats.map(polecat => {
+            const idleMins = Math.round((polecat.idle_duration_ms || 0) / 60000);
+            const isStalled = polecat.status === 'idle' && idleMins >= state.autoNudge.thresholdMinutes;
+            const idleTimeClass = isStalled ? 'polecat-idle-time stalled' : 'polecat-idle-time';
+            const idleTimeDisplay = polecat.status === 'idle' && idleMins > 0 ? `${idleMins}m` : '-';
+            const canNudge = polecat.status !== 'offline';
+            return `
             <div class="polecat-item">
                 <div class="polecat-info">
                     <div class="polecat-name">${polecat.name}</div>
                     <div class="polecat-rig">${polecat.rig}${polecat.hook ? ' · ' + polecat.hook : ''}</div>
                 </div>
+                <div class="${idleTimeClass}" title="Idle time">${idleTimeDisplay}</div>
                 <div class="polecat-status ${polecat.status}">${polecat.status}</div>
+                <button class="polecat-nudge" onclick="nudgePolecat('${polecat.rig}', '${polecat.name}')" title="Nudge polecat" ${canNudge ? '' : 'disabled'}>⚡</button>
                 <button class="polecat-kill" onclick="killPolecat('${polecat.rig}', '${polecat.name}')" title="Kill polecat">×</button>
             </div>
-        `).join('') : '<div class="polecat-item"><div class="polecat-info"><div class="polecat-name">No active polecats</div></div></div>';
+        `}).join('') : '<div class="polecat-item" style="grid-template-columns: 1fr;"><div class="polecat-info"><div class="polecat-name">No active polecats</div></div></div>';
 
         // Render beads
         const beadList = document.getElementById('beadList');
@@ -1377,6 +1525,87 @@
             }
         } catch (e) {
             addLog('webui', `Error killing polecat: ${e.message}`, 'error');
+        }
+    }
+
+    async function nudgePolecat(rig, name) {
+        try {
+            const res = await fetch(`${API_BASE}/api/polecat/${rig}/${name}/nudge`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ message: 'Manual nudge from WebUI' })
+            });
+            if (res.ok) {
+                addLog('webui', `Nudged polecat ${name}`, 'success');
+            } else {
+                const err = await res.json();
+                addLog('webui', `Failed to nudge ${name}: ${err.error}`, 'error');
+            }
+        } catch (e) {
+            addLog('webui', `Error nudging polecat: ${e.message}`, 'error');
+        }
+    }
+
+    async function toggleAutoNudge() {
+        const checkbox = document.getElementById('autonudgeEnabled');
+        try {
+            const res = await fetch(`${API_BASE}/api/autonudge/config`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ enabled: checkbox.checked })
+            });
+            if (res.ok) {
+                const data = await res.json();
+                state.autoNudge.enabled = data.enabled;
+                updateAutoNudgeUI();
+                addLog('webui', `Auto-nudge ${data.enabled ? 'enabled' : 'disabled'}`, data.enabled ? 'success' : '');
+            } else {
+                checkbox.checked = state.autoNudge.enabled; // Revert
+                const err = await res.json();
+                addLog('webui', `Failed to toggle auto-nudge: ${err.error}`, 'error');
+            }
+        } catch (e) {
+            checkbox.checked = state.autoNudge.enabled; // Revert
+            addLog('webui', `Error toggling auto-nudge: ${e.message}`, 'error');
+        }
+    }
+
+    async function updateAutoNudgeThreshold() {
+        const input = document.getElementById('autonudgeThreshold');
+        const value = parseInt(input.value) || 5;
+        try {
+            const res = await fetch(`${API_BASE}/api/autonudge/config`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ threshold_minutes: value })
+            });
+            if (res.ok) {
+                const data = await res.json();
+                state.autoNudge.thresholdMinutes = data.threshold_minutes;
+                input.value = data.threshold_minutes;
+                addLog('webui', `Auto-nudge threshold set to ${data.threshold_minutes} minutes`, '');
+                render(); // Re-render to update stalled indicators
+            } else {
+                input.value = state.autoNudge.thresholdMinutes; // Revert
+                const err = await res.json();
+                addLog('webui', `Failed to update threshold: ${err.error}`, 'error');
+            }
+        } catch (e) {
+            input.value = state.autoNudge.thresholdMinutes; // Revert
+            addLog('webui', `Error updating threshold: ${e.message}`, 'error');
+        }
+    }
+
+    function updateAutoNudgeUI() {
+        const checkbox = document.getElementById('autonudgeEnabled');
+        const threshold = document.getElementById('autonudgeThreshold');
+        const status = document.getElementById('autonudgeStatus');
+
+        if (checkbox) checkbox.checked = state.autoNudge.enabled;
+        if (threshold) threshold.value = state.autoNudge.thresholdMinutes;
+        if (status) {
+            status.textContent = state.autoNudge.enabled ? 'Enabled' : 'Disabled';
+            status.className = state.autoNudge.enabled ? 'autonudge-status enabled' : 'autonudge-status disabled';
         }
     }
 
