@@ -707,6 +707,50 @@
             background: var(--gray-200);
         }
 
+        .spy-nudge-input {
+            display: flex;
+            padding: 0.75rem 1rem;
+            gap: 0.5rem;
+            background: var(--white);
+            border: 1px solid var(--black);
+            border-top: none;
+        }
+
+        .spy-nudge-input input {
+            flex: 1;
+            border: 1px solid var(--gray-200);
+            padding: 0.5rem 0.75rem;
+            font-size: 0.875rem;
+            font-family: inherit;
+        }
+
+        .spy-nudge-input input:focus {
+            outline: none;
+            border-color: var(--black);
+        }
+
+        .spy-nudge-input button {
+            background: var(--pink);
+            color: var(--white);
+            border: none;
+            padding: 0.5rem 1rem;
+            font-size: 0.75rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            cursor: pointer;
+            transition: background 0.15s ease;
+        }
+
+        .spy-nudge-input button:hover {
+            background: var(--gray-600);
+        }
+
+        .spy-nudge-input button:disabled {
+            background: var(--gray-200);
+            cursor: not-allowed;
+        }
+
         /* Responsive */
         @media (max-width: 1200px) {
             .main-grid {
@@ -864,6 +908,10 @@
                 <span class="spy-status stopped" id="spyStatus">Stopped</span>
             </div>
             <div class="spy-terminal" id="spyTerminal">Select a session above to start watching live terminal output...</div>
+            <div class="spy-nudge-input" id="spyNudgeContainer" style="display: none;">
+                <input type="text" id="nudgeMessage" placeholder="Send a nudge to this session..." />
+                <button id="sendNudge" onclick="sendNudge()">Nudge</button>
+            </div>
         </div>
     </main>
 
@@ -1386,6 +1434,7 @@
         const session = select.value;
         const status = document.getElementById('spyStatus');
         const terminal = document.getElementById('spyTerminal');
+        const nudgeContainer = document.getElementById('spyNudgeContainer');
 
         if (session && session !== state.spySession) {
             // Subscribe to new session
@@ -1396,6 +1445,7 @@
             }
             status.className = 'spy-status streaming';
             status.textContent = 'Streaming';
+            nudgeContainer.style.display = 'flex';
             addLog('webui', `Started watching ${session}`, 'success');
         } else if (!session && state.spySession) {
             // Unsubscribe
@@ -1406,10 +1456,42 @@
             state.spyOutput = 'Select a session above to start watching live terminal output...';
             status.className = 'spy-status stopped';
             status.textContent = 'Stopped';
+            nudgeContainer.style.display = 'none';
             addLog('webui', 'Stopped spy view', '');
         }
 
         renderSpyTerminal();
+    }
+
+    async function sendNudge() {
+        const input = document.getElementById('nudgeMessage');
+        const button = document.getElementById('sendNudge');
+        const message = input.value.trim();
+
+        if (!message) return;
+        if (!state.spySession) {
+            addLog('webui', 'No session selected for nudge', 'error');
+            return;
+        }
+
+        button.disabled = true;
+        try {
+            const res = await fetch(`${API_BASE}/api/nudge/${encodeURIComponent(state.spySession)}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ message })
+            });
+            if (res.ok) {
+                input.value = '';
+                addLog('webui', `Nudged ${state.spySession}: ${message.slice(0, 50)}${message.length > 50 ? '...' : ''}`, 'success');
+            } else {
+                const err = await res.json();
+                addLog('webui', `Failed to nudge: ${err.error}`, 'error');
+            }
+        } catch (e) {
+            addLog('webui', `Error sending nudge: ${e.message}`, 'error');
+        }
+        button.disabled = false;
     }
 
     function renderSpyTerminal() {
@@ -1428,12 +1510,18 @@
         terminal.scrollTop = terminal.scrollHeight;
     }
 
-    // Handle enter key in mayor chat
+    // Handle enter key in mayor chat and nudge input
     document.addEventListener('DOMContentLoaded', () => {
-        const input = document.getElementById('mayorMessage');
-        if (input) {
-            input.addEventListener('keypress', (e) => {
+        const mayorInput = document.getElementById('mayorMessage');
+        if (mayorInput) {
+            mayorInput.addEventListener('keypress', (e) => {
                 if (e.key === 'Enter') sendToMayor();
+            });
+        }
+        const nudgeInput = document.getElementById('nudgeMessage');
+        if (nudgeInput) {
+            nudgeInput.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') sendNudge();
             });
         }
     });
