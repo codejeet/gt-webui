@@ -17,12 +17,15 @@ Monitoring dashboard for active Gas Town instances.
 - Gas Town (`gt`) CLI in PATH
 
 ### Start the server
-
+to install through git
 ```bash
 cd ~/gt/gt-webui
 npm install
 npm start
 ```
+or
+
+npm install -g gt-webui
 
 Or use the start script:
 
